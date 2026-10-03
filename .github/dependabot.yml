@@ -1,0 +1,20 @@
+version: 2
+updates:
+  - package-ecosystem: bun
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      dependencies:
+        patterns: ['*']
+    ignore:
+      # Must match engines.vscode; bump both together by hand when raising the minimum VS Code version.
+      - dependency-name: '@types/vscode'
+      # Tracks the Node version bundled with the minimum supported VS Code.
+      - dependency-name: '@types/node'
+        update-types: ['version-update:semver-major']
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly

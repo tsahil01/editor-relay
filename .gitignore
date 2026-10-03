@@ -137,3 +137,10 @@ dist
 
 # temp
 temp/
+# packaged extension
+*.vsix
+
+# test runs
+out/
+.vscode-test/
+!test/fixture/.env
