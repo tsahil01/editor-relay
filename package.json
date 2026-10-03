@@ -1,15 +1,17 @@
 {
   "name": "vscode-context-bridge",
-  "displayName": "VS Code Context Bridge",
+  "displayName": "Editor Relay",
   "publisher": "sahiltiwaskar",
-  "version": "1.0.1",
-  "description": "Bridges VS Code editor context to external Node.js processes via HTTP/WebSocket",
+  "version": "2.0.0",
+  "description": "Gives AI agents live VS Code editor context and language-server powered tools over MCP",
   "engines": {
-    "vscode": ">=1.74.0"
+    "vscode": "^1.101.0"
   },
+  "categories": [
+    "AI",
+    "Other"
+  ],
   "activationEvents": [
-    "onCommand:vscode-context-bridge.startServer",
-    "onCommand:vscode-context-bridge.stopServer",
     "onStartupFinished"
   ],
   "main": "dist/extension.js",
@@ -17,28 +19,33 @@
     "commands": [
       {
         "command": "vscode-context-bridge.startServer",
-        "title": "Start Context Bridge Server",
-        "category": "Context Bridge"
+        "title": "Start Editor Relay Server",
+        "category": "Editor Relay"
       },
       {
         "command": "vscode-context-bridge.stopServer",
-        "title": "Stop Context Bridge Server",
-        "category": "Context Bridge"
+        "title": "Stop Editor Relay Server",
+        "category": "Editor Relay"
       },
       {
         "command": "vscode-context-bridge.showStatus",
         "title": "Show Server Status",
-        "category": "Context Bridge"
+        "category": "Editor Relay"
+      },
+      {
+        "command": "vscode-context-bridge.copyToken",
+        "title": "Copy Auth Token",
+        "category": "Editor Relay"
       }
     ],
     "configuration": [
       {
-        "title": "VS Code Context Bridge",
+        "title": "Editor Relay",
         "properties": {
           "vscodeContextBridge.port": {
             "type": "number",
             "default": 3210,
-            "description": "Port for the VS Code Context Bridge server"
+            "description": "Port for the Editor Relay server"
           },
           "vscodeContextBridge.shareDiagnostics": {
             "type": "boolean",
@@ -52,32 +59,54 @@
           },
           "vscodeContextBridge.ignoreFiles": {
             "type": "array",
-            "items": { "type": "string" },
-            "default": ["node_modules", ".env"],
+            "items": {
+              "type": "string"
+            },
+            "default": [
+              "node_modules",
+              ".env"
+            ],
             "description": "List of file or folder patterns to ignore when sharing context. Substring match."
+          },
+          "vscodeContextBridge.shareTerminalOutput": {
+            "type": "boolean",
+            "default": true,
+            "description": "Share recent terminal commands and their output (requires terminal shell integration)"
           }
         }
       }
+    ],
+    "mcpServerDefinitionProviders": [
+      {
+        "id": "vscode-context-bridge.mcp",
+        "label": "Editor Relay"
+      }
     ]
   },
-  
   "scripts": {
-    "vscode:prepublish": "npm run compile",
-    "compile": "tsc -p ./",
-    "watch": "tsc -watch -p ./",
-    "test": "node ./examples/client.js",
-    "package": "vsce package"
+    "typecheck": "tsc --noEmit -p ./",
+    "bundle": "esbuild src/extension.ts --bundle --platform=node --format=cjs --target=node20 --external:vscode --outfile=dist/extension.js",
+    "compile": "bun run typecheck && bun run bundle --sourcemap",
+    "watch": "bun run bundle --sourcemap --watch",
+    "package": "bun run typecheck && rm -rf dist && bun run bundle --minify && vsce package --no-dependencies",
+    "bundle:test": "esbuild test/suite/*.test.ts --bundle --platform=node --format=cjs --target=node20 --external:vscode --external:mocha --outdir=out/test",
+    "test": "bun run compile && bun run bundle:test && vscode-test"
   },
   "devDependencies": {
-    "@types/node": "^24.0.3",
-    "@types/vscode": "^1.74.0",
-    "typescript": "^5.8.3"
+    "@types/express": "^5.0.6",
+    "@types/mocha": "^10.0.10",
+    "@types/node": "^22.20.5",
+    "@types/vscode": "~1.101.0",
+    "@vscode/test-cli": "^0.0.15",
+    "@vscode/test-electron": "^3.1.0",
+    "@vscode/vsce": "^4.0.0",
+    "esbuild": "^0.28.2",
+    "typescript": "~5.9.3"
   },
   "dependencies": {
-    "@types/express": "^5.0.3",
-    "@types/ws": "^8.18.1",
-    "express": "^5.1.0",
-    "ws": "^8.18.2"
+    "@modelcontextprotocol/sdk": "^1.32.0",
+    "express": "^5.2.1",
+    "zod": "^4.6.5"
   },
   "repository": {
     "type": "git",
@@ -92,8 +121,9 @@
   "keywords": [
     "vscode",
     "context",
-    "bridge",
-    "http",
-    "websocket"
+    "mcp",
+    "model context protocol",
+    "ai",
+    "agent"
   ]
 }
