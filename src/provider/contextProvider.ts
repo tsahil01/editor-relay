@@ -1,61 +1,36 @@
 import * as vscode from 'vscode';
-import { EventEmitter } from 'events';
-import { ActiveFileInfo, CommandRequest, CommandResponse, ContextData, DiagnosticInfo, DiffChange, DiffInfo, OpenTabInfo, TextSelectionInfo, ChangeProposal, ChangeProposalRequest, ChangeProposalResponse } from '../types';
+import * as path from 'path';
+import { ActiveFileInfo, ActiveNotebookInfo, CommandResponse, ContextData, DiagnosticInfo, DiffChange, DiffInfo, OpenTabInfo, TextSelectionInfo, ChangeProposal, ChangeProposalRequest, ChangeProposalResponse, WorkspaceFolderInfo } from '../types';
 import { languageMap } from '../const';
+import { TerminalTracker } from './terminalTracker';
+import { getConfig, isIgnored } from '../config';
+import { registerReviewProvider, reviewChanges } from '../review';
 
-export class ContextProvider extends EventEmitter {
-    private config: vscode.WorkspaceConfiguration;
+export class ContextProvider implements vscode.Disposable {
     private changeProposals: Map<string, ChangeProposal> = new Map();
+    private disposables: vscode.Disposable[] = [];
 
-    constructor() {
-        super();
-        this.config = vscode.workspace.getConfiguration('vscodeContextBridge');
+    constructor(private terminalTracker: TerminalTracker) {
+        this.disposables.push(registerReviewProvider());
+    }
+
+    dispose() {
+        this.disposables.forEach(d => d.dispose());
     }
 
     async getContext(): Promise<ContextData> {
-        const activeFile = await this.getActiveFileInfo();
-        const textSelection = this.getTextSelectionInfo();
-        const openTabs = this.getOpenTabsInfo();
-        const diffs = await this.getDiffsInfo();
-        const diagnostics = await this.getDiagnosticsInfo();
-
-        const context: ContextData = {
-            activeFile,
-            textSelection,
-            openTabs,
-            diffs: diffs === null ? null : diffs,
-            diagnostics: diagnostics === null ? null : diagnostics,
+        const shareTerminal = getConfig().get<boolean>('shareTerminalOutput', true);
+        return {
+            workspaceFolders: this.getWorkspaceFoldersInfo(),
+            activeFile: await this.getActiveFileInfo(),
+            activeNotebook: this.getActiveNotebookInfo(),
+            textSelection: this.getTextSelectionInfo(),
+            openTabs: this.getOpenTabsInfo(),
+            diffs: await this.getDiffsInfo(),
+            diagnostics: await this.getDiagnosticsInfo(),
+            terminalCommands: shareTerminal ? this.terminalTracker.getCommands() : null,
             timestamp: Date.now()
         };
-        return context;
-    }
-
-    async executeCommand(cmd: CommandRequest): Promise<CommandResponse> {
-        const { command, arguments: args = [], options = {} } = cmd;
-        switch (command) {
-            case 'openFile':
-                return await this.openFile(args[0], options);
-            case 'writeFile':
-                return await this.writeFile(args[0], args[1]);
-            case 'deleteFile':
-                return await this.deleteFile(args[0]);
-            case 'selectText':
-                return await this.selectText(args[0], args[1], args[2], args[3]);
-            case 'showNotification':
-                return await this.showNotification(args[0], options.type || 'info');
-            case 'proposeChange':
-                return await this.proposeChange(args[0]);
-            case 'acceptProposal':
-                return await this.acceptProposal(args[0]);
-            case 'rejectProposal':
-                return await this.rejectProposal(args[0]);
-            default:
-                return {
-                    success: false,
-                    error: `Unknown command: ${command}`,
-                    message: `Failed to execute command: ${command}`
-                };
-        }
     }
 
     private getLangFromUri(uri: vscode.Uri): string {
@@ -63,14 +38,38 @@ export class ContextProvider extends EventEmitter {
         return languageMap[afterDot || ''] || 'plaintext';
     }
 
-    private async getActiveFileInfo(): Promise<ActiveFileInfo | null> {
-        const activeEditor = vscode.window.activeTextEditor;
-        if (!activeEditor) {
+    private getWorkspaceFoldersInfo(): WorkspaceFolderInfo[] {
+        return (vscode.workspace.workspaceFolders ?? []).map(folder => ({
+            name: folder.name,
+            path: folder.uri.fsPath
+        }));
+    }
+
+    private getActiveNotebookInfo(): ActiveNotebookInfo | null {
+        const editor = vscode.window.activeNotebookEditor;
+        if (!editor || isIgnored(editor.notebook.uri.fsPath)) {
             return null;
         }
-        const ignoreFiles = this.config.get<string[]>('ignoreFiles') ?? [];
-        const filePath = activeEditor.document.fileName;
-        if (ignoreFiles.some(pattern => filePath.toLowerCase().includes(pattern.trim().toLowerCase()))) {
+        const notebook = editor.notebook;
+        return {
+            path: notebook.uri.fsPath,
+            name: path.basename(notebook.uri.fsPath),
+            notebookType: notebook.notebookType,
+            isDirty: notebook.isDirty,
+            selectedCellIndexes: editor.selections.flatMap(range =>
+                Array.from({ length: range.end - range.start }, (_, i) => range.start + i)),
+            cells: notebook.getCells().map(cell => ({
+                index: cell.index,
+                kind: cell.kind === vscode.NotebookCellKind.Code ? 'code' : 'markup',
+                language: cell.document.languageId,
+                content: cell.document.getText()
+            }))
+        };
+    }
+
+    private async getActiveFileInfo(): Promise<ActiveFileInfo | null> {
+        const activeEditor = vscode.window.activeTextEditor;
+        if (!activeEditor || isIgnored(activeEditor.document.fileName)) {
             return null;
         }
         const document = activeEditor.document;
@@ -86,12 +85,7 @@ export class ContextProvider extends EventEmitter {
 
     private getTextSelectionInfo(): TextSelectionInfo | null {
         const activeEditor = vscode.window.activeTextEditor;
-        if (!activeEditor || activeEditor.selection.isEmpty) {
-            return null;
-        }
-        const ignoreFiles = this.config.get<string[]>('ignoreFiles') ?? [];
-        const filePath = activeEditor.document.fileName;
-        if (ignoreFiles.some(pattern => filePath.includes(pattern))) {
+        if (!activeEditor || activeEditor.selection.isEmpty || isIgnored(activeEditor.document.fileName)) {
             return null;
         }
         const selection = activeEditor.selection;
@@ -110,30 +104,31 @@ export class ContextProvider extends EventEmitter {
 
     private getOpenTabsInfo(): OpenTabInfo[] {
         const openTabs: OpenTabInfo[] = [];
-        const ignoreFiles = this.config.get<string[]>('ignoreFiles') ?? [];
         vscode.window.tabGroups.all.forEach(grp => {
             grp.tabs.forEach(tab => {
-                if (tab.input instanceof vscode.TabInputText) {
-                    const document = tab.input.uri;
-                    const filePath = document.fsPath;
-                    if (ignoreFiles.some(pattern => filePath.includes(pattern))) {
-                        return;
-                    }
-                    openTabs.push({
-                        path: filePath,
-                        name: document.path.split('/').pop() || document.path.split('\\').pop() || 'unknown',
-                        language: this.getLangFromUri(document),
-                        isActive: tab.isActive,
-                        isDirty: tab.isActive || false
-                    })
+                const isText = tab.input instanceof vscode.TabInputText;
+                if (!isText && !(tab.input instanceof vscode.TabInputNotebook)) {
+                    return;
                 }
+                const document = tab.input.uri;
+                const filePath = document.fsPath;
+                if (isIgnored(filePath)) {
+                    return;
+                }
+                openTabs.push({
+                    path: filePath,
+                    name: document.path.split('/').pop() || document.path.split('\\').pop() || 'unknown',
+                    language: isText ? this.getLangFromUri(document) : (tab.input as vscode.TabInputNotebook).notebookType,
+                    isActive: tab.isActive,
+                    isDirty: tab.isDirty
+                })
             })
         })
         return openTabs;
     }
 
     private async getDiffsInfo(): Promise<DiffInfo[] | null> {
-        const shareDiffs = this.config.get<boolean>('shareDiffs', true);
+        const shareDiffs = getConfig().get<boolean>('shareDiffs', true);
         if (!shareDiffs) {
             return null;
         }
@@ -149,7 +144,7 @@ export class ContextProvider extends EventEmitter {
             const diffs: DiffInfo[] = [];
             for (const repo of gitApi.repositories) {
                 for (const change of repo.state.workingTreeChanges) {
-                    if ((this.config.get<string[]>('ignoreFiles') ?? []).includes(change.uri.fsPath)) {
+                    if (isIgnored(change.uri.fsPath)) {
                         continue;
                     }
                     const filePath = change.uri.fsPath;
@@ -211,8 +206,8 @@ export class ContextProvider extends EventEmitter {
         return changes;
     }
 
-    private async getDiagnosticsInfo(): Promise<DiagnosticInfo[] | null> {
-        const shareDiagnostics = this.config.get<boolean>('shareDiagnostics', true);
+    async getDiagnosticsInfo(): Promise<DiagnosticInfo[] | null> {
+        const shareDiagnostics = getConfig().get<boolean>('shareDiagnostics', true);
         if (!shareDiagnostics) {
             return null;
         }
@@ -221,7 +216,7 @@ export class ContextProvider extends EventEmitter {
         const diagnosticCollection = vscode.languages.getDiagnostics();
 
         for (const [uri, diags] of diagnosticCollection) {
-            if ((this.config.get<string[]>('ignoreFiles') ?? []).includes(uri.fsPath)) {
+            if (isIgnored(uri.fsPath)) {
                 continue;
             }
             if (uri.scheme === 'file') {
@@ -249,14 +244,11 @@ export class ContextProvider extends EventEmitter {
         return diagnostics;
     }
 
-    private async openFile(filePath: string, options: any = {}): Promise<CommandResponse> {
+    async openFile(filePath: string, options: any = {}): Promise<CommandResponse> {
         try {
             const uri = vscode.Uri.file(filePath);
             const document = await vscode.workspace.openTextDocument(uri);
             await vscode.window.showTextDocument(document, options);
-
-            const context = await this.getContext();
-            this.emit('contextChanged', context);
 
             return {
                 success: true,
@@ -273,49 +265,7 @@ export class ContextProvider extends EventEmitter {
         }
     }
 
-    private async writeFile(filePath: string, content: string): Promise<CommandResponse> {
-        try {
-            const uri = vscode.Uri.file(filePath);
-            const document = await vscode.workspace.openTextDocument(uri);
-            const edit = new vscode.WorkspaceEdit();
-            edit.replace(uri, new vscode.Range(0, 0, document.lineCount, 0), content);
-            await vscode.workspace.applyEdit(edit);
-            await document.save();
-
-            return {
-                success: true,
-                data: { filePath },
-                message: `File written successfully: ${filePath}`
-            };
-        } catch (error) {
-            return {
-                success: false,
-                error: error instanceof Error ? error.message : "Unknown error",
-                message: `Failed to write file: ${filePath}`
-            };
-        }
-    }
-
-    private async deleteFile(filePath: string): Promise<CommandResponse> {
-        try {
-            const uri = vscode.Uri.file(filePath);
-            await vscode.workspace.fs.delete(uri, { useTrash: true });
-
-            return {
-                success: true,
-                data: { filePath },
-                message: `File deleted successfully: ${filePath}`
-            };
-        } catch (error) {
-            return {
-                success: false,
-                error: error instanceof Error ? error.message : "Unknown error",
-                message: `Failed to delete file: ${filePath}`
-            };
-        }
-    }
-
-    private async selectText(startLine: number, startChar: number, endLine: number, endChar: number): Promise<CommandResponse> {
+    async selectText(startLine: number, startChar: number, endLine: number, endChar: number): Promise<CommandResponse> {
         try {
             const activeEditor = vscode.window.activeTextEditor;
             if (!activeEditor) {
@@ -328,8 +278,6 @@ export class ContextProvider extends EventEmitter {
             activeEditor.selection = selection;
             activeEditor.revealRange(selection);
 
-            const context = await this.getContext();
-            this.emit('contextChanged', context);
             return {
                 success: true,
                 data: { startLine, startChar, endLine, endChar },
@@ -344,7 +292,7 @@ export class ContextProvider extends EventEmitter {
         }
     }
 
-    private async showNotification(message: string, type: 'info' | 'warning' | 'error' = 'info'): Promise<CommandResponse> {
+    async showNotification(message: string, type: 'info' | 'warning' | 'error' = 'info'): Promise<CommandResponse> {
         try {
             switch (type) {
                 case 'info':
@@ -371,9 +319,9 @@ export class ContextProvider extends EventEmitter {
         }
     }
 
-    private async proposeChange(request: ChangeProposalRequest): Promise<ChangeProposalResponse> {
+    async proposeChange(request: ChangeProposalRequest): Promise<ChangeProposalResponse> {
         try {
-            const proposalId = `change_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+            const proposalId = `change_${Date.now()}_${Math.random().toString(36).slice(2, 11)}`;
             const proposal: ChangeProposal = {
                 id: proposalId,
                 title: request.title,
@@ -491,83 +439,22 @@ export class ContextProvider extends EventEmitter {
         }
     }
 
-        private async showInlineDiffAndWait(proposal: ChangeProposal): Promise<ChangeProposalResponse> {
-        let tempOriginalUri: vscode.Uri | undefined;
-        let tempProposedUri: vscode.Uri | undefined;
-        
+    private async showInlineDiffAndWait(proposal: ChangeProposal): Promise<ChangeProposalResponse> {
         try {
             const uri = vscode.Uri.file(proposal.filePath);
             const document = await vscode.workspace.openTextDocument(uri);
-            const originalContent = document.getText();
-            
-            let proposedContent = originalContent;
-            
-            // Process changes in reverse order to maintain text positions
-            const sortedChanges = [...proposal.changes].reverse();
-            
-            for (const change of sortedChanges) {
-                const { originalContent: changeOriginal, proposedContent: changeProposed } = change;
-                
-                // Find the content to replace
-                const contentIndex = proposedContent.indexOf(changeOriginal);
-                if (contentIndex === -1) {
-                    console.warn(`Original content not found in file: "${changeOriginal.substring(0, 50)}..."`);
+            let proposedContent = document.getText();
+
+            for (const change of [...proposal.changes].reverse()) {
+                if (!proposedContent.includes(change.originalContent)) {
+                    console.warn(`Original content not found in file: "${change.originalContent.substring(0, 50)}..."`);
                     continue;
                 }
-                
-                // Check if there are multiple occurrences
-                const lastIndex = proposedContent.lastIndexOf(changeOriginal);
-                if (contentIndex !== lastIndex) {
-                    console.warn(`Multiple occurrences found for content: "${changeOriginal.substring(0, 50)}...". Using first occurrence.`);
-                }
-                
-                // Replace the first occurrence
-                proposedContent = proposedContent.replace(changeOriginal, changeProposed);
+                proposedContent = proposedContent.replace(change.originalContent, change.proposedContent);
             }
 
-            const fileName = proposal.filePath.split('/').pop() || proposal.filePath.split('\\').pop() || 'file';
-            const ext = fileName.includes('.') ? fileName.split('.').pop() : '';
-            
-            const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
-            if (!workspaceFolder) {
-                throw new Error('No workspace folder found');
-            }
-            
-            const vscodeFolder = vscode.Uri.joinPath(workspaceFolder.uri, '.vscode');
-            await vscode.workspace.fs.createDirectory(vscodeFolder);
-            
-            tempOriginalUri = vscode.Uri.joinPath(vscodeFolder, `${fileName}.original.${ext}`);
-            tempProposedUri = vscode.Uri.joinPath(vscodeFolder, `${fileName}.proposed.${ext}`);
-            
-            const encoder = new TextEncoder();
-            await vscode.workspace.fs.writeFile(tempOriginalUri, encoder.encode(originalContent));
-            await vscode.workspace.fs.writeFile(tempProposedUri, encoder.encode(proposedContent));
-            
-            await vscode.commands.executeCommand('vscode.diff',
-                tempOriginalUri,
-                tempProposedUri,
-                `${proposal.title} - Review Changes`
-            );
-            
-            const changeCount = proposal.changes.length;
-            const action = await vscode.window.showInformationMessage(
-                `${proposal.title} - Review ${changeCount} change(s)`,
-                { modal: false },
-                { title: 'Accept Changes', isCloseAffordance: false },
-                { title: 'Reject Changes', isCloseAffordance: true }
-            );
-            
-            try {
-                if (tempOriginalUri) {
-                    await vscode.workspace.fs.delete(tempOriginalUri);
-                }
-                if (tempProposedUri) {
-                    await vscode.workspace.fs.delete(tempProposedUri);
-                }
-            } catch (e) {
-                console.warn('Failed to clean up temp files:', e);
-            }
-            
+            const action = await reviewChanges(proposal.title, `${proposal.title} - Review ${proposal.changes.length} change(s)`, [{ uri, proposedContent }]);
+
             if (!action) {
                 this.changeProposals.delete(proposal.id);
                 return {
@@ -577,29 +464,14 @@ export class ContextProvider extends EventEmitter {
                     accepted: false
                 };
             }
-            
-            if (action.title === 'Accept Changes') {
-                const result = await this.acceptProposal(proposal.id);
-                vscode.window.showInformationMessage('Changes accepted and applied!');
-                return result;
-            } else {
-                const result = await this.rejectProposal(proposal.id);
-                vscode.window.showInformationMessage('Changes rejected.');
-                return result;
-            }
+
+            const result = action === 'accept'
+                ? await this.acceptProposal(proposal.id)
+                : await this.rejectProposal(proposal.id);
+            vscode.window.showInformationMessage(result.accepted ? 'Changes accepted and applied!' : result.success ? 'Changes rejected.' : result.message);
+            return result;
 
         } catch (error) {
-            try {
-                if (tempOriginalUri) {
-                    await vscode.workspace.fs.delete(tempOriginalUri);
-                }
-                if (tempProposedUri) {
-                    await vscode.workspace.fs.delete(tempProposedUri);
-                }
-            } catch (e) {
-                console.warn('Failed to clean up temp files:', e);
-            }
-            
             console.error('Failed to show diff:', error);
             vscode.window.showErrorMessage('Failed to show change proposal diff');
             this.changeProposals.delete(proposal.id);
