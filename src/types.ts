@@ -1,9 +1,3 @@
-export interface CommandRequest {
-    command: string;
-    arguments?: any[];
-    options?: Record<string, any>;
-}
-
 export interface ActiveFileInfo {
     path: string;
     name: string;
@@ -70,12 +64,46 @@ export interface CommandResponse {
     message: string;
 }
 
+export interface WorkspaceFolderInfo {
+    name: string;
+    path: string;
+}
+
+export interface NotebookCellInfo {
+    index: number;
+    kind: 'code' | 'markup';
+    language: string;
+    content: string;
+}
+
+export interface ActiveNotebookInfo {
+    path: string;
+    name: string;
+    notebookType: string;
+    isDirty: boolean;
+    selectedCellIndexes: number[];
+    cells: NotebookCellInfo[];
+}
+
+export interface TerminalCommandInfo {
+    terminalName: string;
+    commandLine: string;
+    cwd?: string;
+    exitCode?: number;
+    output: string;
+    startedAt: number;
+    endedAt?: number;
+}
+
 export interface ContextData {
+    workspaceFolders: WorkspaceFolderInfo[];
     activeFile: ActiveFileInfo | null;
+    activeNotebook: ActiveNotebookInfo | null;
     textSelection: TextSelectionInfo | null;
     openTabs: OpenTabInfo[];
     diffs: DiffInfo[] | null;
     diagnostics: DiagnosticInfo[] | null;
+    terminalCommands: TerminalCommandInfo[] | null;
     timestamp: number;
 }
 
