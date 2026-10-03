@@ -1,77 +1,63 @@
 import express, { Request, Response, NextFunction } from 'express';
 import * as http from 'http';
-import * as WebSocket from 'ws';
+import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { ContextProvider } from '../provider/contextProvider';
-import { CommandRequest, CommandResponse, ContextData } from '../types';
+import { isValidToken } from '../auth';
+import { createMcpServer } from './mcpServer';
+
+export const HOST = '127.0.0.1';
+
+function tokenFromRequest(req: http.IncomingMessage): string | undefined {
+    const header = req.headers.authorization;
+    return header?.startsWith('Bearer ') ? header.slice('Bearer '.length).trim() : undefined;
+}
 
 export class ContextBridgeServer {
     private server: http.Server | undefined;
-    private wss: WebSocket.Server | undefined;
-    private port: number;
-    private contextProvider: ContextProvider
     private serverRunning: boolean = false;
     private app: express.Application;
 
-    constructor(port: number, contextProvider: ContextProvider) {
-        this.port = port;
-        this.contextProvider = contextProvider;
+    constructor(
+        private port: number,
+        private contextProvider: ContextProvider,
+        private token: string,
+        private version: string,
+    ) {
         this.app = express();
-        this.app.use(express.json());
+        this.app.use(express.json({ limit: '10mb' }));
+        this.app.get('/health', (req: Request, res: Response) => {
+            res.status(200).json({ status: 'ok', server: 'running' });
+        });
         this.app.use((req: Request, res: Response, next: NextFunction) => {
-            res.setHeader('Access-Control-Allow-Origin', '*');
-            res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-            res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
-            if (req.method === 'OPTIONS') {
-                res.sendStatus(200);
-            } else {
-                next();
+            if (!isValidToken(tokenFromRequest(req), this.token)) {
+                res.status(401).json({ error: 'Unauthorized' });
+                return;
             }
+            next();
         });
         this.setupRoutes();
-
-         if (typeof (this.contextProvider as any).on === 'function') {
-            (this.contextProvider as any).on('contextChanged', (newContext: ContextData) => {
-                this.broadcastContextUpdate(newContext);
-            });
-        }
     }
 
     private setupRoutes() {
-        this.app.get('/context', async (req: Request, res: Response) => {
+        this.app.post('/mcp', async (req: Request, res: Response) => {
+            const mcpServer = createMcpServer(this.contextProvider, this.version);
+            const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
+            res.on('close', () => {
+                transport.close();
+                mcpServer.close();
+            });
             try {
-                const context = await this.contextProvider.getContext();
-                res.status(200).json(context);
+                await mcpServer.connect(transport);
+                await transport.handleRequest(req, res, req.body);
             } catch (error) {
-                res.status(500).json({ error: 'Failed to get context' });
+                if (!res.headersSent) {
+                    res.status(500).json({ jsonrpc: '2.0', error: { code: -32603, message: 'Internal server error' }, id: null });
+                }
             }
         });
 
-        this.app.post('/command', async (req: Request, res: Response) => {
-            try {
-                const commandData: CommandRequest = req.body;
-                const response = await this.handleCommandRequest(commandData);
-                res.status(200).json(response);
-            } catch (error) {
-                res.status(400).json({ error: 'Invalid command format' });
-            }
-        });
-
-        this.app.post('/propose-change', async (req: Request, res: Response) => {
-            try {
-                const proposalRequest = req.body;
-                const commandRequest: CommandRequest = {
-                    command: 'proposeChange',
-                    arguments: [proposalRequest]
-                };
-                const response = await this.handleCommandRequest(commandRequest);
-                res.status(200).json(response);
-            } catch (error) {
-                res.status(400).json({ error: 'Invalid change proposal format' });
-            }
-        });
-
-        this.app.get('/health', (req: Request, res: Response) => {
-            res.status(200).json({ status: 'ok', server: 'running' });
+        this.app.all('/mcp', (req: Request, res: Response) => {
+            res.status(405).json({ jsonrpc: '2.0', error: { code: -32000, message: 'Method not allowed' }, id: null });
         });
 
         this.app.use((req: Request, res: Response) => {
@@ -83,13 +69,9 @@ export class ContextBridgeServer {
         return new Promise<void>((resolve, reject) => {
             try {
                 this.server = http.createServer(this.app);
-                this.wss = new WebSocket.Server({ server: this.server });
-                this.wss.on('connection', (ws: WebSocket) => {
-                    this.handleWebSocketConnection(ws);
-                });
-                this.server.listen(this.port, () => {
+                this.server.listen(this.port, HOST, () => {
                     this.serverRunning = true;
-                    console.log(`Context Bridge server is running on port ${this.port}`);
+                    console.log(`Editor Relay server is running on ${HOST}:${this.port}`);
                     resolve();
                 });
                 this.server.on('error', (error: Error) => {
@@ -104,79 +86,20 @@ export class ContextBridgeServer {
 
     async stop() {
         return new Promise<void>((resolve) => {
-            if (this.wss) {
-                this.wss.close(() => {
-                    console.log('WebSocket server closed');
-                });
-            }
             if (this.server) {
                 this.server.close(() => {
                     this.serverRunning = false;
                     console.log('HTTP server closed');
                     resolve();
                 });
+                this.server.closeAllConnections();
             } else {
                 resolve();
             }
         });
     }
 
-    isRunning(): boolean {    
+    isRunning(): boolean {
         return this.serverRunning;
     }
-
-    private handleWebSocketConnection(ws: WebSocket) {
-        console.log('WebSocket client connected');
-
-        ws.on('message', async(message: WebSocket.Data) => {
-            try {
-                const data = JSON.parse(message.toString());
-                if (data.type === "getContext") {
-                    const context = await this.contextProvider.getContext();
-                    ws.send(JSON.stringify({ type: 'context', data: context }));
-                } else if (data.type === "command") {
-                    const res = await this.handleCommandRequest(data.command);
-                    ws.send(JSON.stringify({ type: 'commandResponse', data: res }));    
-                } else {
-                    ws.send(JSON.stringify({ error: 'Unknown message type' }));
-                }
-            } catch (error) {
-                console.error('Error handling WebSocket message:', error);
-                ws.send(JSON.stringify({ error: 'Invalid msg format' }));
-            }
-        })
-        ws.on('close', () => {
-            console.log('WebSocket client disconnected');
-        });
-        ws.on('error', (error: Error) => {
-            console.error('WebSocket error:', error);
-        });
-    }
-    
-    private async handleCommandRequest(commandData: CommandRequest): Promise<CommandResponse> {
-        try {
-            const result = await this.contextProvider.executeCommand(commandData);
-            return {
-                success: true,
-                data: result,
-                message: 'Command executed successfully'
-            };
-        } catch (error) {
-            return {
-                success: false,
-                error: error instanceof Error ? error.message : 'Unknown error',
-                message: 'Command execution failed'
-            };
-        }
-    }
-
-    public broadcastContextUpdate(updatedContext: ContextData) {
-        if (this.wss) {
-            this.wss.clients.forEach(client => {
-                if (client.readyState === WebSocket.OPEN) {
-                    client.send(JSON.stringify({ type: 'context', data: updatedContext }));
-                }
-            });
-        }
-    }
-} 
+}
