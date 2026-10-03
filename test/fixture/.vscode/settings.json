@@ -1,0 +1,5 @@
+{
+  "vscodeContextBridge.port": 38999,
+  "terminal.integrated.shellIntegration.enabled": true,
+  "chat.disableAIFeatures": true
+}

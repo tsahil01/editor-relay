@@ -1,0 +1,7 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    { "label": "pass", "type": "shell", "command": "exit 0", "problemMatcher": [] },
+    { "label": "fail", "type": "shell", "command": "exit 3", "problemMatcher": [] }
+  ]
+}
