@@ -110,14 +110,14 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/tsahil01/vscode-context-bridge.git"
+    "url": "git+https://github.com/tsahil01/editor-relay.git"
   },
   "author": "",
   "license": "ISC",
   "bugs": {
-    "url": "https://github.com/tsahil01/vscode-context-bridge/issues"
+    "url": "https://github.com/tsahil01/editor-relay/issues"
   },
-  "homepage": "https://github.com/tsahil01/vscode-context-bridge#readme",
+  "homepage": "https://github.com/tsahil01/editor-relay#readme",
   "keywords": [
     "vscode",
     "context",

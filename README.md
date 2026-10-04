@@ -36,8 +36,8 @@ The extension runs a local [Model Context Protocol](https://modelcontextprotocol
 ### Building from Source
 
 ```bash
-git clone https://github.com/tsahil01/vscode-context-bridge
-cd vscode-context-bridge
+git clone https://github.com/tsahil01/editor-relay
+cd editor-relay
 bun install
 bun run compile   # typecheck + bundle into dist/extension.js
 bun run package   # produce a .vsix
