@@ -1,0 +1,241 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Editor Relay</title>
+<meta name="description" content="Give AI agents your VS Code context and language tools over MCP.">
+<meta property="og:title" content="Editor Relay">
+<meta property="og:description" content="Give AI agents your VS Code context and language tools over MCP.">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='8' fill='%2310b981'/><path d='M9 11h9l-3-3M23 21h-9l3 3' stroke='white' stroke-width='2.6' fill='none' stroke-linecap='round' stroke-linejoin='round'/></svg>">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #fbfbf9;
+    --surface: #ffffff;
+    --surface-2: #f3f3ef;
+    --text: #17181a;
+    --muted: #5d6066;
+    --border: #e4e4de;
+    --accent: #0f9f6e;
+    --accent-soft: #e3f5ed;
+    --code-bg: #15171a;
+    --code-text: #e6e6e3;
+    --code-muted: #8a8f98;
+    --code-accent: #34d399;
+    --code-warn: #fbbf24;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0e0f11;
+      --surface: #15171a;
+      --surface-2: #1b1d21;
+      --text: #ececea;
+      --muted: #9a9ea6;
+      --border: #26292e;
+      --accent: #34d399;
+      --accent-soft: #10291f;
+      --code-bg: #0a0b0c;
+    }
+  }
+  * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font: 16px/1.6 "Instrument Sans", system-ui, -apple-system, sans-serif;
+  }
+  a { color: inherit; }
+  code, pre { font-family: "JetBrains Mono", ui-monospace, monospace; }
+  .wrap { max-width: 1040px; margin: 0 auto; padding: 0 16px; }
+
+  nav { display: flex; align-items: center; justify-content: space-between; padding: 20px 0; }
+  .brand { display: flex; align-items: center; gap: 10px; font-weight: 600; text-decoration: none; }
+  .brand svg { width: 28px; height: 28px; }
+  nav .links { display: flex; gap: 20px; font-size: 15px; }
+  nav .links a { color: var(--muted); text-decoration: none; }
+  nav .links a:hover { color: var(--text); }
+
+  .hero { padding: 64px 0 40px; display: grid; gap: 48px; grid-template-columns: 1fr; }
+  @media (min-width: 900px) { .hero { grid-template-columns: minmax(0, 1fr) minmax(0, 1.05fr); align-items: center; padding-top: 80px; } }
+  .eyebrow { display: inline-block; font-size: 13px; font-weight: 600; color: var(--accent); background: var(--accent-soft); padding: 4px 10px; border-radius: 999px; }
+  h1 { font-size: clamp(38px, 6vw, 56px); line-height: 1.05; letter-spacing: -0.02em; margin: 18px 0 16px; }
+  .lede { font-size: 19px; color: var(--muted); margin: 0 0 28px; max-width: 34em; }
+  .actions { display: flex; flex-wrap: wrap; gap: 12px; }
+  .btn { display: inline-flex; align-items: center; gap: 8px; padding: 11px 18px; border-radius: 10px; font-weight: 600; font-size: 15px; text-decoration: none; border: 1px solid var(--border); background: var(--surface); }
+  .btn.primary { background: var(--text); color: var(--bg); border-color: var(--text); }
+  .btn:hover { transform: translateY(-1px); }
+
+  .terminal { background: var(--code-bg); color: var(--code-text); border-radius: 14px; padding: 18px 20px 20px; font-size: 13.5px; line-height: 1.75; box-shadow: 0 20px 50px -24px rgba(0,0,0,.45); overflow-x: auto; }
+  .terminal .dots { display: flex; gap: 6px; margin-bottom: 14px; }
+  .terminal .dots i { width: 10px; height: 10px; border-radius: 50%; background: #3a3d43; }
+  .terminal .you { color: var(--code-text); }
+  .terminal .tool { color: var(--code-accent); }
+  .terminal .note { color: var(--code-muted); }
+  .terminal .ask { color: var(--code-warn); }
+  .terminal pre { margin: 0; white-space: pre; }
+
+  section { padding: 56px 0; }
+  h2 { font-size: 30px; letter-spacing: -0.01em; margin: 0 0 8px; }
+  .sub { color: var(--muted); margin: 0 0 32px; }
+
+  .steps { display: grid; gap: 16px; grid-template-columns: 1fr; counter-reset: step; }
+  @media (min-width: 760px) { .steps { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+  .step { min-width: 0; background: var(--surface); border: 1px solid var(--border); border-radius: 14px; padding: 22px; }
+  .step::before { counter-increment: step; content: counter(step); display: inline-grid; place-items: center; width: 28px; height: 28px; border-radius: 8px; background: var(--accent-soft); color: var(--accent); font-weight: 700; font-size: 14px; margin-bottom: 12px; }
+  .step h3 { margin: 0 0 6px; font-size: 17px; }
+  .step p { margin: 0; color: var(--muted); font-size: 15px; }
+
+  .snippet { position: relative; margin-top: 12px; background: var(--code-bg); color: var(--code-text); border-radius: 10px; padding: 12px 44px 12px 14px; font-size: 12.5px; overflow-x: auto; }
+  .snippet pre { margin: 0; white-space: pre; }
+  .copy { position: absolute; top: 8px; right: 8px; background: #2a2d33; color: #d8d8d5; border: 0; border-radius: 6px; font: 500 12px "Instrument Sans", sans-serif; padding: 4px 8px; cursor: pointer; }
+  .copy:hover { background: #363a41; }
+
+  .tools { display: grid; gap: 16px; grid-template-columns: 1fr; }
+  @media (min-width: 640px) { .tools { grid-template-columns: repeat(2, 1fr); } }
+  @media (min-width: 960px) { .tools { grid-template-columns: repeat(3, 1fr); } }
+  .group { background: var(--surface); border: 1px solid var(--border); border-radius: 14px; padding: 20px 22px; }
+  .group h3 { margin: 0 0 4px; font-size: 16px; }
+  .group p { margin: 0 0 14px; color: var(--muted); font-size: 14px; }
+  .group ul { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 6px; }
+  .group li code { display: inline-block; font-size: 12.5px; background: var(--surface-2); border: 1px solid var(--border); border-radius: 6px; padding: 2px 7px; }
+
+  .control { display: grid; gap: 16px; grid-template-columns: 1fr; }
+  @media (min-width: 760px) { .control { grid-template-columns: repeat(3, 1fr); } }
+  .control div { border-left: 3px solid var(--accent); padding: 4px 0 4px 16px; }
+  .control h3 { margin: 0 0 4px; font-size: 16px; }
+  .control p { margin: 0; color: var(--muted); font-size: 15px; }
+
+  footer { border-top: 1px solid var(--border); padding: 28px 0 40px; color: var(--muted); font-size: 14px; display: flex; flex-wrap: wrap; justify-content: space-between; gap: 12px; }
+  footer a { color: var(--muted); }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <nav>
+    <a class="brand" href="#">
+      <svg viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="8" fill="#10b981"/><path d="M9 11h9l-3-3M23 21h-9l3 3" stroke="white" stroke-width="2.6" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      Editor Relay
+    </a>
+    <div class="links">
+      <a href="#tools">Tools</a>
+      <a href="#setup">Setup</a>
+      <a href="https://github.com/tsahil01/editor-relay">GitHub</a>
+    </div>
+  </nav>
+
+  <header class="hero">
+    <div>
+      <span class="eyebrow">VS Code extension · MCP server</span>
+      <h1>Your editor, in your agent's hands.</h1>
+      <p class="lede">Editor Relay gives AI agents what you see in VS Code: the open file, selection, errors, terminal output. It also lets them use your language servers, tasks, git and debugger. Edits and commands wait for your approval.</p>
+      <div class="actions">
+        <a class="btn primary" href="https://marketplace.visualstudio.com/items?itemName=SahilTiwaskar.vscode-context-bridge">Install for VS Code</a>
+        <a class="btn" href="https://github.com/tsahil01/editor-relay">View on GitHub</a>
+      </div>
+    </div>
+    <div class="terminal" role="img" aria-label="Example agent session using Editor Relay tools">
+      <div class="dots"><i></i><i></i><i></i></div>
+<pre><span class="you">› fix the error I'm looking at</span>
+
+<span class="tool">get_context</span>        <span class="note">main.ts · line 4 selected</span>
+<span class="tool">get_diagnostics</span>    <span class="note">Cannot find name 'multiply'</span>
+<span class="tool">go_to_definition</span>   <span class="note">→ src/math.ts:5</span>
+<span class="tool">get_code_actions</span>   <span class="note">Add import from "./math"</span>
+<span class="tool">apply_code_action</span>  <span class="ask">⏸ waiting for your review…</span>
+                   <span class="note">✓ accepted · 1 edit</span>
+<span class="tool">run_task</span> test      <span class="note">exit 0</span>
+
+<span class="you">Fixed: added the missing import. Tests pass.</span></pre>
+    </div>
+  </header>
+
+  <section id="setup">
+    <h2>Set up in a minute</h2>
+    <p class="sub">The server starts with VS Code and only listens on 127.0.0.1.</p>
+    <div class="steps">
+      <div class="step">
+        <h3>Install the extension</h3>
+        <p>The status bar shows <strong>Editor Relay: Running</strong>.</p>
+        <div class="snippet"><button class="copy">Copy</button><pre>code --install-extension SahilTiwaskar.vscode-context-bridge</pre></div>
+      </div>
+      <div class="step">
+        <h3>Connect your agent</h3>
+        <p>Copilot picks it up automatically. For other MCP clients, add the server with its token:</p>
+        <div class="snippet"><button class="copy">Copy</button><pre>claude mcp add --transport http editor-relay \
+  http://127.0.0.1:3210/mcp --header \
+  "Authorization: Bearer $(cat ~/.vscode-context-bridge/token)"</pre></div>
+      </div>
+      <div class="step">
+        <h3>Just ask</h3>
+        <p>"Who calls this function?" "Rename this everywhere." "Why did my last command fail?" The agent picks the right tools.</p>
+      </div>
+    </div>
+  </section>
+
+  <section id="tools">
+    <h2>20 tools, powered by VS Code</h2>
+    <p class="sub">Code intelligence comes from the language servers you already have installed, for any language VS Code supports.</p>
+    <div class="tools">
+      <div class="group">
+        <h3>Editor context</h3>
+        <p>What you're looking at right now.</p>
+        <ul><li><code>get_context</code></li><li><code>open_file</code></li><li><code>select_text</code></li><li><code>show_notification</code></li><li><code>propose_change</code></li></ul>
+      </div>
+      <div class="group">
+        <h3>Code intelligence</h3>
+        <p>Navigate code the way your editor does.</p>
+        <ul><li><code>go_to_definition</code></li><li><code>find_references</code></li><li><code>hover_info</code></li><li><code>document_symbols</code></li><li><code>workspace_symbol_search</code></li></ul>
+      </div>
+      <div class="group">
+        <h3>Fixes &amp; refactors</h3>
+        <p>Real quick fixes and project-wide renames.</p>
+        <ul><li><code>get_diagnostics</code></li><li><code>get_code_actions</code></li><li><code>apply_code_action</code></li><li><code>rename_symbol</code></li></ul>
+      </div>
+      <div class="group">
+        <h3>Terminal &amp; tasks</h3>
+        <p>Run commands and tasks, then read the results.</p>
+        <ul><li><code>run_in_terminal</code></li><li><code>list_tasks</code></li><li><code>run_task</code></li></ul>
+      </div>
+      <div class="group">
+        <h3>Git &amp; debug</h3>
+        <p>Repo status, breakpoints and live debug state.</p>
+        <ul><li><code>git_status</code></li><li><code>get_breakpoints</code></li><li><code>get_debug_state</code></li></ul>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>You stay in control</h2>
+    <p class="sub">Agents can read context, but nothing changes without you.</p>
+    <div class="control">
+      <div><h3>Review every edit</h3><p>Proposals, quick fixes and renames open as a diff with Accept and Reject.</p></div>
+      <div><h3>Approve every command</h3><p>Terminal commands ask first, then run in a terminal you can see.</p></div>
+      <div><h3>Local and private</h3><p>Loopback only and token-protected. Choose what's shared and hide files like <code>.env</code>.</p></div>
+    </div>
+  </section>
+
+  <footer>
+    <span>Editor Relay · open source</span>
+    <span><a href="https://github.com/tsahil01/editor-relay">GitHub</a> · <a href="https://github.com/tsahil01/editor-relay/issues">Issues</a> · <a href="https://github.com/tsahil01/editor-relay/blob/main/CHANGELOG.md">Changelog</a></span>
+  </footer>
+</div>
+<script>
+  document.querySelectorAll('.copy').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const text = btn.nextElementSibling.textContent;
+      try {
+        await navigator.clipboard.writeText(text);
+        btn.textContent = 'Copied';
+      } catch {
+        btn.textContent = 'Press ⌘C';
+      }
+      setTimeout(() => { btn.textContent = 'Copy'; }, 1500);
+    });
+  });
+</script>
+</body>
+</html>
